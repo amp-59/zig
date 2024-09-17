@@ -25018,11 +25018,13 @@ fn zirSplat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Air.I
     if (!dest_ty.isVector(zcu)) return sema.fail(block, src, "expected vector type, found '{}'", .{dest_ty.fmt(pt)});
 
     if (!dest_ty.hasRuntimeBits(zcu)) {
-        const empty_aggregate = try pt.intern(.{ .aggregate = .{
-            .ty = dest_ty.toIntern(),
-            .storage = .{ .elems = &[_]InternPool.Index{} },
-        } });
-        return Air.internedToRef(empty_aggregate);
+        const scalar_ty = dest_ty.childType(zcu);
+        if (try sema.typeHasOnePossibleValue(scalar_ty)) |val| {
+            return Air.internedToRef(try pt.intern(.{ .aggregate = .{
+                .ty = dest_ty.toIntern(),
+                .storage = .{ .repeated_elem = Value.toIntern(val) },
+            } }));
+        }
     }
 
     const operand = try sema.resolveInst(extra.rhs);

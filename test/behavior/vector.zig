@@ -369,6 +369,9 @@ test "vector @splat" {
             for (as_array) |elem| try expect(v == elem);
         }
         fn doTheTest() !void {
+            try testForT(4, @as(u0, 0));
+            try testForT(1, @as(i0, 0));
+
             // Splats with multiple-of-8 bit types that fill a 128bit vector.
             try testForT(16, @as(u8, 0xEE));
             try testForT(8, @as(u16, 0xBEEF));
