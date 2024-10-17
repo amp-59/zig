@@ -1,9 +1,12 @@
 const std = @import("std");
 
-pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = stack_trace;
-    if (std.mem.eql(u8, message, "for loop over objects with non-equal lengths")) {
-        std.process.exit(0);
+pub fn panic2(cause: std.builtin.Panic.Cause, data: anytype) noreturn {
+    if (cause == .mismatched_for_loop_capture_lengths) {
+        if (data.loop_len == 8 and data.capture_len == 2) {
+            std.process.exit(0);
+        } else {
+            std.debug.print("{}\n", .{data});
+        }
     }
     std.process.exit(1);
 }

@@ -21,6 +21,7 @@ pub const SelfInfo = @import("debug/SelfInfo.zig");
 pub const Info = @import("debug/Info.zig");
 pub const Coverage = @import("debug/Coverage.zig");
 
+pub const Panic = @import("debug/Panic.zig");
 pub const FormattedPanic = @import("debug/FormattedPanic.zig");
 pub const SimplePanic = @import("debug/SimplePanic.zig");
 

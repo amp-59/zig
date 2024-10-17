@@ -89,6 +89,16 @@ pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ret_
     }
 }
 
+// Avoid dragging in the runtime safety mechanisms into this .o file,
+// unless we're trying to test compiler-rt.
+pub fn panic2(id: anytype) noreturn {
+    @branchHint(.cold);
+    if (builtin.is_test) {
+        std.debug.panic("{s}", .{id});
+    }
+    @trap();
+}
+
 /// AArch64 is the only ABI (at the moment) to support f16 arguments without the
 /// need for extending them to wider fp types.
 /// TODO remove this; do this type selection in the language rather than

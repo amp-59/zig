@@ -1,8 +1,7 @@
 const std = @import("std");
 
-pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = stack_trace;
-    if (std.mem.eql(u8, message, "oh no")) {
+pub fn panic2(cause: std.builtin.Panic.Cause, data: anytype) noreturn {
+    if (cause == .message and std.mem.eql(u8, data, "oh no")) {
         std.process.exit(0);
     }
     std.process.exit(1);

@@ -33,30 +33,6 @@ pub const subsystem: ?std.Target.SubSystem = blk: {
 pub const StackTrace = struct {
     index: usize,
     instruction_addresses: []usize,
-
-    pub fn format(
-        self: StackTrace,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        if (fmt.len != 0) std.fmt.invalidFmtError(fmt, self);
-
-        // TODO: re-evaluate whether to use format() methods at all.
-        // Until then, avoid an error when using GeneralPurposeAllocator with WebAssembly
-        // where it tries to call detectTTYConfig here.
-        if (builtin.os.tag == .freestanding) return;
-
-        _ = options;
-        const debug_info = std.debug.getSelfDebugInfo() catch |err| {
-            return writer.print("\nUnable to print stack trace: Unable to open debug info: {s}\n", .{@errorName(err)});
-        };
-        const tty_config = std.io.tty.detectConfig(std.io.getStdErr());
-        try writer.writeAll("\n");
-        std.debug.writeStackTrace(self, writer, debug_info, tty_config) catch |err| {
-            try writer.print("Unable to print stack trace: {s}\n", .{@errorName(err)});
-        };
-    }
 };
 
 /// This data structure is used by the Zig language code generation and
@@ -773,48 +749,34 @@ pub const TestFn = struct {
     func: *const fn () anyerror!void,
 };
 
-/// Deprecated, use the `Panic` namespace instead.
-/// To be deleted after 0.14.0 is released.
-pub const PanicFn = fn ([]const u8, ?*StackTrace, ?usize) noreturn;
-/// Deprecated, use the `Panic` namespace instead.
-/// To be deleted after 0.14.0 is released.
-pub const panic: PanicFn = Panic.call;
-
 /// This namespace is used by the Zig compiler to emit various kinds of safety
 /// panics. These can be overridden by making a public `Panic` namespace in the
 /// root source file.
-pub const Panic: type = if (@hasDecl(root, "Panic"))
-    root.Panic
-else if (@hasDecl(root, "panic")) // Deprecated, use `Panic` instead.
-    DeprecatedPanic
+pub const panic = if (@hasDecl(root, "panic"))
+    root.panic
 else if (builtin.zig_backend == .stage2_riscv64)
-    std.debug.SimplePanic // https://github.com/ziglang/zig/issues/21519
+    std.debug.SimplePanic.call
 else
-    std.debug.FormattedPanic;
+    std.debug.FormattedPanic.call;
 
-/// To be deleted after 0.14.0 is released.
-const DeprecatedPanic = struct {
-    pub const call = root.panic;
-    pub const sentinelMismatch = std.debug.FormattedPanic.sentinelMismatch;
-    pub const unwrapError = std.debug.FormattedPanic.unwrapError;
-    pub const outOfBounds = std.debug.FormattedPanic.outOfBounds;
-    pub const startGreaterThanEnd = std.debug.FormattedPanic.startGreaterThanEnd;
-    pub const inactiveUnionField = std.debug.FormattedPanic.inactiveUnionField;
-    pub const messages = std.debug.FormattedPanic.messages;
-};
+pub fn checkNonScalarSentinel(expected: anytype, actual: @TypeOf(expected)) void {
+    if (!std.meta.eql(expected, actual)) {
+        panicSentinelMismatch(expected, actual);
+    }
+}
 
 /// To be deleted after zig1.wasm is updated.
-pub const panicSentinelMismatch = Panic.sentinelMismatch;
+pub const panicSentinelMismatch = std.debug.FormattedPanic.sentinelMismatch;
 /// To be deleted after zig1.wasm is updated.
-pub const panicUnwrapError = Panic.unwrapError;
+pub const panicUnwrapError = std.debug.FormattedPanic.unwrapError;
 /// To be deleted after zig1.wasm is updated.
-pub const panicOutOfBounds = Panic.outOfBounds;
+pub const panicOutOfBounds = std.debug.FormattedPanic.outOfBounds;
 /// To be deleted after zig1.wasm is updated.
-pub const panicStartGreaterThanEnd = Panic.startGreaterThanEnd;
+pub const panicStartGreaterThanEnd = std.debug.FormattedPanic.startGreaterThanEnd;
 /// To be deleted after zig1.wasm is updated.
-pub const panicInactiveUnionField = Panic.inactiveUnionField;
+pub const panicInactiveUnionField = std.debug.FormattedPanic.inactiveUnionField;
 /// To be deleted after zig1.wasm is updated.
-pub const panic_messages = Panic.messages;
+pub const panic_messages = std.debug.FormattedPanic.messages;
 
 pub noinline fn returnError(st: *StackTrace) void {
     @branchHint(.unlikely);
@@ -823,6 +785,324 @@ pub noinline fn returnError(st: *StackTrace) void {
         st.instruction_addresses[st.index] = @returnAddress();
     st.index += 1;
 }
+
+/// This function is used by the Zig language code generation and
+/// therefore must be kept in sync with the compiler implementation.
+pub const panic2 = if (@hasDecl(root, "panic2"))
+    root.panic2
+else if (builtin.mode == .Debug)
+    std.debug.Panic.canonical
+else
+    std.debug.Panic.simple;
+
+/// This type is used by the Zig language code generation and
+/// therefore must be kept in sync with the compiler implementation.
+pub const Panic = struct {
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    pub const Id = @typeInfo(Cause).@"union".tag_type.?;
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// Used by panic cause `unwrapped_error`.
+    pub const ErrorStackTrace = struct {
+        st: ?*StackTrace,
+        err: anyerror,
+    };
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// Used by panic cause `unwrapped_error_extra`.
+    pub const ErrorStackTraceExtra = struct {
+        st: ?*StackTrace,
+        err: anyerror,
+        msg: []const u8,
+    };
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// Used by panic cause `index_out_of_bounds`.
+    pub const IndexBounds = struct {
+        index: usize,
+        length: usize,
+    };
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// Used by panic cause `reference_out_of_order`.
+    pub const OrderedBounds = struct {
+        start: usize,
+        end: usize,
+    };
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// Used by panic cause `reference_out_of_order_extra`.
+    pub const OrderedBoundsExtra = struct {
+        start: usize,
+        end: usize,
+        length: usize,
+    };
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// Used by panic cause `cast_to_ptr_from_invalid`.
+    pub const Address = struct {
+        value: usize,
+        alignment: usize,
+    };
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// Used by panic cause `memcpy_argument_aliasing`.
+    pub const AddressRanges = struct {
+        dest_start: usize,
+        dest_end: usize,
+        src_start: usize,
+        src_end: usize,
+    };
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// Used by panic cause `mismatched_memcpy_argument_lengths`.
+    pub const ArgumentLengths = struct {
+        dest_len: usize,
+        src_len: usize,
+    };
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// Used by panic cause `mismatched_for_loop_capture_lengths`.
+    pub const CaptureLengths = struct {
+        loop_len: usize,
+        capture_len: usize,
+    };
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// Used by panic causes involving an invalid cast where both types are
+    /// relevant: `cast_to_error_from_invalid`, `cast_to_int_from_invalid`,
+    /// `cast_to_ptr_from_invalid`, and `cast_to_unsigned_from_negative`.
+    pub const Cast = struct { to: type, from: type };
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// This panic function type only permits message data or the ID of the
+    /// panic cause. This is the default mode for `Fast` and `Small` builds
+    /// with runtime safety.
+    pub const SimpleFn = fn (anytype) noreturn;
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// This panic function type allows that any information relevant to the
+    /// cause of panic be forwarded to the panic handler. This is the default
+    /// mode for `Debug` builds with runtime safety.
+    pub const GenericFn = fn (comptime Cause, anytype) noreturn;
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    ///
+    /// This panic function type instantiates a single function with a
+    /// predictable name. The type of the optional pointer parameter is
+    /// determined by the ID. See type function `Data` below for each data type.
+    ///
+    /// The canonical mode only supports data for a subset of panic causes.
+    /// Causes related to invalid casts, undefined arithmetic, and invalid union
+    /// field accesses are not supported.
+    pub const CanonicalFn = fn (Id, ?*const anyopaque) callconv(.C) noreturn;
+
+    /// This type is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    pub const Cause = union(enum(u8)) {
+        // `@panic`
+        message,
+        // `err => unreachable` and `catch unreachable`
+        unwrapped_error,
+        // `err => @panic(msg)` and `catch @panic(msg)`
+        unwrapped_error_extra,
+        // functions marked `noreturn` which return.
+        returned_noreturn,
+        // `unreachable`.
+        reached_unreachable,
+        // Implicit `else => {}` on tags with unused values.
+        corrupt_switch,
+
+        // `ptr[idx]`
+        index_out_of_bounds,
+        // `slice[0..idx]`
+        reference_out_of_bounds,
+        // `ptr[start..end]`
+        reference_out_of_order,
+        // `slice[start..end]`
+        reference_out_of_order_extra,
+
+        /// Tagged union field accesses.
+        accessed_inactive_field: type,
+        /// `.?` and slicing C pointers.
+        accessed_null_value,
+        /// Division in general.
+        divided_by_zero,
+        /// `@memcpy`
+        memcpy_argument_aliasing,
+
+        /// `@memcpy`
+        mismatched_memcpy_argument_lengths,
+        /// `for (x, y) |xx, yy| {}`
+        mismatched_for_loop_capture_lengths,
+        /// Any operation asserting a sentinel.
+        mismatched_sentinel: type,
+        /// Operations asserting a sentinel with value `@as(u8, 0)`.
+        mismatched_sentinel_null,
+
+        /// `@shlExact`
+        shl_overflowed: type,
+        /// `@shrExact`
+        shr_overflowed: type,
+        /// Any bit-shift where the integer type is not a power-of-two.
+        shift_amt_overflowed: type,
+        /// `@divExact`
+        div_with_remainder: type,
+        /// `*`
+        mul_overflowed: type,
+        /// `+`
+        add_overflowed: type,
+        /// `-`
+        sub_overflowed: type,
+        /// `/`, `@divTrunc`, and `@divCeil`.
+        div_overflowed: type,
+
+        /// `@intCast`
+        cast_truncated_data: Cast,
+        /// `@enumFromint` and `@tagName`.
+        cast_to_enum_from_invalid: type,
+        /// `@errorCast` and  `@errorFromInt`.
+        cast_to_error_from_invalid: Cast,
+        /// `@ptrCast` and  `@ptrFromInt`.
+        cast_to_ptr_from_invalid,
+        /// `@intFromFloat`
+        cast_to_int_from_invalid: Cast,
+        /// `@intCast`
+        cast_to_unsigned_from_negative: Cast,
+    };
+
+    /// This function is used by the Zig language code generation and
+    /// therefore must be kept in sync with the compiler implementation.
+    pub fn Data(comptime cause: Cause) type {
+        switch (cause) {
+            .message => {
+                return []const u8;
+            },
+            .returned_noreturn,
+            .reached_unreachable,
+            .accessed_null_value,
+            .divided_by_zero,
+            .corrupt_switch,
+            => {
+                return void;
+            },
+            .unwrapped_error => {
+                return ErrorStackTrace;
+            },
+            .unwrapped_error_extra => {
+                return ErrorStackTraceExtra;
+            },
+            .index_out_of_bounds => {
+                return IndexBounds;
+            },
+            .reference_out_of_bounds,
+            .reference_out_of_order,
+            => {
+                return OrderedBounds;
+            },
+            .reference_out_of_order_extra => {
+                return OrderedBoundsExtra;
+            },
+            .memcpy_argument_aliasing => {
+                return AddressRanges;
+            },
+            .mismatched_memcpy_argument_lengths => {
+                return ArgumentLengths;
+            },
+            .mismatched_for_loop_capture_lengths => {
+                return CaptureLengths;
+            },
+            .mismatched_sentinel_null => {
+                return u8;
+            },
+            .mismatched_sentinel => |elem_type| {
+                return struct { expected: elem_type, actual: elem_type };
+            },
+            .accessed_inactive_field => |tag_type| {
+                return struct { expected: tag_type, found: tag_type };
+            },
+            .mul_overflowed,
+            .add_overflowed,
+            .sub_overflowed,
+            .div_overflowed,
+            .div_with_remainder,
+            => |val_type| {
+                return struct { lhs: val_type, rhs: val_type };
+            },
+            .shl_overflowed,
+            .shr_overflowed,
+            => |val_type| {
+                switch (@typeInfo(val_type)) {
+                    .int => {
+                        return struct { value: val_type, shift_amt: u16 };
+                    },
+                    else => |info| {
+                        return struct { value: val_type, shift_amt: @Vector(info.vector.len, u16) };
+                    },
+                }
+            },
+            .shift_amt_overflowed => |val_type| {
+                switch (@typeInfo(val_type)) {
+                    .int => {
+                        return u16;
+                    },
+                    else => |info| {
+                        return @Vector(info.vector.len, u16);
+                    },
+                }
+            },
+            .cast_to_ptr_from_invalid => {
+                return Address;
+            },
+            .cast_to_int_from_invalid,
+            .cast_truncated_data,
+            .cast_to_unsigned_from_negative,
+            .cast_to_error_from_invalid,
+            => |num_types| {
+                return num_types.from;
+            },
+            .cast_to_enum_from_invalid => |enum_type| {
+                return @typeInfo(enum_type).@"enum".tag_type;
+            },
+        }
+    }
+
+    // For compatibility with master.
+    pub const call = std.debug.FormattedPanic.call;
+    pub const sentinelMismatch = std.debug.FormattedPanic.sentinelMismatch;
+    pub const unwrapError = std.debug.FormattedPanic.unwrapError;
+    pub const outOfBounds = std.debug.FormattedPanic.outOfBounds;
+    pub const startGreaterThanEnd = std.debug.FormattedPanic.startGreaterThanEnd;
+    pub const startGreaterThanEndExtra = std.debug.FormattedPanic.startGreaterThanEndExtra;
+    pub const inactiveUnionField = std.debug.FormattedPanic.inactiveUnionField;
+    pub const messages = std.debug.FormattedPanic.messages;
+};
 
 const std = @import("std.zig");
 const root = @import("root");

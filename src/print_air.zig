@@ -104,17 +104,14 @@ const Writer = struct {
         switch (tag) {
             .add,
             .add_optimized,
-            .add_safe,
             .add_wrap,
             .add_sat,
             .sub,
             .sub_optimized,
-            .sub_safe,
             .sub_wrap,
             .sub_sat,
             .mul,
             .mul_optimized,
-            .mul_safe,
             .mul_wrap,
             .mul_sat,
             .div_float,
@@ -163,6 +160,11 @@ const Writer = struct {
             .memset,
             .memset_safe,
             => try w.writeBinOp(s, inst),
+
+            .add_safe,
+            .sub_safe,
+            .mul_safe,
+            => try w.writeSafeBin(s, inst),
 
             .is_null,
             .is_non_null,
@@ -467,6 +469,18 @@ const Writer = struct {
 
         const inst_ty = data[@intFromEnum(inst)].ty_pl.ty.toType();
         try w.writeType(s, inst_ty);
+        try s.writeAll(", ");
+        try w.writeOperand(s, inst, 0, extra.lhs);
+        try s.writeAll(", ");
+        try w.writeOperand(s, inst, 1, extra.rhs);
+    }
+
+    fn writeSafeBin(w: *Writer, s: anytype, inst: Air.Inst.Index) @TypeOf(s).Error!void {
+        const data = w.air.instructions.items(.data);
+        const pl_op = data[@intFromEnum(inst)].pl_op;
+        const extra = w.air.extraData(Air.Bin, pl_op.payload).data;
+
+        try w.writeInstRef(s, data[@intFromEnum(inst)].pl_op.operand, false);
         try s.writeAll(", ");
         try w.writeOperand(s, inst, 0, extra.lhs);
         try s.writeAll(", ");

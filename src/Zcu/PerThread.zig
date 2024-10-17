@@ -1,32 +1,6 @@
 //! This type provides a wrapper around a `*Zcu` for uses which require a thread `Id`.
 //! Any operation which mutates `InternPool` state lives here rather than on `Zcu`.
 
-const Air = @import("../Air.zig");
-const Allocator = std.mem.Allocator;
-const assert = std.debug.assert;
-const Ast = std.zig.Ast;
-const AstGen = std.zig.AstGen;
-const BigIntConst = std.math.big.int.Const;
-const BigIntMutable = std.math.big.int.Mutable;
-const build_options = @import("build_options");
-const builtin = @import("builtin");
-const Cache = std.Build.Cache;
-const dev = @import("../dev.zig");
-const InternPool = @import("../InternPool.zig");
-const AnalUnit = InternPool.AnalUnit;
-const isUpDir = @import("../introspect.zig").isUpDir;
-const Liveness = @import("../Liveness.zig");
-const log = std.log.scoped(.zcu);
-const Module = @import("../Package.zig").Module;
-const Sema = @import("../Sema.zig");
-const std = @import("std");
-const target_util = @import("../target.zig");
-const trace = @import("../tracy.zig").trace;
-const Type = @import("../Type.zig");
-const Value = @import("../Value.zig");
-const Zcu = @import("../Zcu.zig");
-const Zir = std.zig.Zir;
-
 zcu: *Zcu,
 
 /// Dense, per-thread unique index.
@@ -3093,6 +3067,185 @@ pub fn intBitsForValue(pt: Zcu.PerThread, val: Value, sign: bool) u16 {
     }
 }
 
+pub fn anonymizeScalar(pt: Zcu.PerThread, num_ty: Type) Allocator.Error!Type {
+    const scalar_ty: Type = num_ty.scalarType(pt.zcu);
+    if (Type.isAnyFloat(scalar_ty)) {
+        return num_ty;
+    }
+    if (!Type.isNamedInt(scalar_ty)) {
+        return num_ty;
+    }
+    if (num_ty.zigTypeTag(pt.zcu) == .vector) {
+        const child_ty: Type = try pt.anonymizeScalar(scalar_ty);
+        if (Type.toIntern(scalar_ty) == Type.toIntern(child_ty)) {
+            return num_ty;
+        }
+        return pt.vectorType(.{
+            .len = num_ty.vectorLen(pt.zcu),
+            .child = Type.toIntern(child_ty),
+        });
+    }
+    const int_info: InternPool.Key.IntType = num_ty.intInfo(pt.zcu);
+    switch (int_info.signedness) {
+        .signed => switch (int_info.bits) {
+            8 => return Type.i8,
+            16 => return Type.i16,
+            32 => return Type.i32,
+            64 => return Type.i64,
+            128 => return Type.i128,
+            else => |bits| return pt.intType(.signed, bits),
+        },
+        .unsigned => switch (int_info.bits) {
+            8 => return Type.u8,
+            16 => return Type.u16,
+            32 => return Type.u32,
+            64 => return Type.u64,
+            128 => return Type.u128,
+            else => |bits| return pt.intType(.unsigned, bits),
+        },
+    }
+}
+
+pub fn getUnionLayout(pt: Zcu.PerThread, loaded_union: InternPool.LoadedUnionType) Zcu.UnionLayout {
+    const mod = pt.zcu;
+    const ip = &mod.intern_pool;
+    assert(loaded_union.haveLayout(ip));
+    var most_aligned_field: u32 = undefined;
+    var most_aligned_field_size: u64 = undefined;
+    var biggest_field: u32 = undefined;
+    var payload_size: u64 = 0;
+    var payload_align: InternPool.Alignment = .@"1";
+    for (loaded_union.field_types.get(ip), 0..) |field_ty, field_index| {
+        if (!Type.fromInterned(field_ty).hasRuntimeBitsIgnoreComptime(pt)) continue;
+
+        const explicit_align = loaded_union.fieldAlign(ip, field_index);
+        const field_align = if (explicit_align != .none)
+            explicit_align
+        else
+            Type.fromInterned(field_ty).abiAlignment(pt);
+        const field_size = Type.fromInterned(field_ty).abiSize(pt);
+        if (field_size > payload_size) {
+            payload_size = field_size;
+            biggest_field = @intCast(field_index);
+        }
+        if (field_align.compare(.gte, payload_align)) {
+            payload_align = field_align;
+            most_aligned_field = @intCast(field_index);
+            most_aligned_field_size = field_size;
+        }
+    }
+    const have_tag = loaded_union.flagsUnordered(ip).runtime_tag.hasTag();
+    if (!have_tag or !Type.fromInterned(loaded_union.enum_tag_ty).hasRuntimeBits(pt)) {
+        return .{
+            .abi_size = payload_align.forward(payload_size),
+            .abi_align = payload_align,
+            .most_aligned_field = most_aligned_field,
+            .most_aligned_field_size = most_aligned_field_size,
+            .biggest_field = biggest_field,
+            .payload_size = payload_size,
+            .payload_align = payload_align,
+            .tag_align = .none,
+            .tag_size = 0,
+            .padding = 0,
+        };
+    }
+
+    const tag_size = Type.fromInterned(loaded_union.enum_tag_ty).abiSize(pt);
+    const tag_align = Type.fromInterned(loaded_union.enum_tag_ty).abiAlignment(pt).max(.@"1");
+    return .{
+        .abi_size = loaded_union.sizeUnordered(ip),
+        .abi_align = tag_align.max(payload_align),
+        .most_aligned_field = most_aligned_field,
+        .most_aligned_field_size = most_aligned_field_size,
+        .biggest_field = biggest_field,
+        .payload_size = payload_size,
+        .payload_align = payload_align,
+        .tag_align = tag_align,
+        .tag_size = tag_size,
+        .padding = loaded_union.paddingUnordered(ip),
+    };
+}
+
+pub fn unionAbiSize(mod: *Module, loaded_union: InternPool.LoadedUnionType) u64 {
+    return mod.getUnionLayout(loaded_union).abi_size;
+}
+
+/// Returns 0 if the union is represented with 0 bits at runtime.
+pub fn unionAbiAlignment(pt: Zcu.PerThread, loaded_union: InternPool.LoadedUnionType) InternPool.Alignment {
+    const mod = pt.zcu;
+    const ip = &mod.intern_pool;
+    const have_tag = loaded_union.flagsPtr(ip).runtime_tag.hasTag();
+    var max_align: InternPool.Alignment = .none;
+    if (have_tag) max_align = Type.fromInterned(loaded_union.enum_tag_ty).abiAlignment(pt);
+    for (loaded_union.field_types.get(ip), 0..) |field_ty, field_index| {
+        if (!Type.fromInterned(field_ty).hasRuntimeBits(pt)) continue;
+
+        const field_align = mod.unionFieldNormalAlignment(loaded_union, @intCast(field_index));
+        max_align = max_align.max(field_align);
+    }
+    return max_align;
+}
+
+/// Returns the field alignment of a non-packed union. Asserts the layout is not packed.
+pub fn unionFieldNormalAlignment(
+    pt: Zcu.PerThread,
+    loaded_union: InternPool.LoadedUnionType,
+    field_index: u32,
+) InternPool.Alignment {
+    return pt.unionFieldNormalAlignmentAdvanced(loaded_union, field_index, .normal) catch unreachable;
+}
+
+/// Returns the field alignment of a non-packed union. Asserts the layout is not packed.
+/// If `strat` is `.sema`, may perform type resolution.
+pub fn unionFieldNormalAlignmentAdvanced(
+    pt: Zcu.PerThread,
+    loaded_union: InternPool.LoadedUnionType,
+    field_index: u32,
+    comptime strat: Type.ResolveStrat,
+) Zcu.SemaError!InternPool.Alignment {
+    const ip = &pt.zcu.intern_pool;
+    assert(loaded_union.flagsUnordered(ip).layout != .@"packed");
+    const field_align = loaded_union.fieldAlign(ip, field_index);
+    if (field_align != .none) return field_align;
+    const field_ty = Type.fromInterned(loaded_union.field_types.get(ip)[field_index]);
+    if (field_ty.isNoReturn(pt.zcu)) return .none;
+    return (try field_ty.abiAlignmentAdvanced(pt, strat.toLazy())).scalar;
+}
+
+/// Returns the field alignment of a non-packed struct. Asserts the layout is not packed.
+pub fn structFieldAlignment(
+    pt: Zcu.PerThread,
+    explicit_alignment: InternPool.Alignment,
+    field_ty: Type,
+    layout: std.builtin.Type.ContainerLayout,
+) InternPool.Alignment {
+    return pt.structFieldAlignmentAdvanced(explicit_alignment, field_ty, layout, .normal) catch unreachable;
+}
+
+/// Returns the field alignment of a non-packed struct. Asserts the layout is not packed.
+/// If `strat` is `.sema`, may perform type resolution.
+pub fn structFieldAlignmentAdvanced(
+    pt: Zcu.PerThread,
+    explicit_alignment: InternPool.Alignment,
+    field_ty: Type,
+    layout: std.builtin.Type.ContainerLayout,
+    comptime strat: Type.ResolveStrat,
+) Zcu.SemaError!InternPool.Alignment {
+    assert(layout != .@"packed");
+    if (explicit_alignment != .none) return explicit_alignment;
+    const ty_abi_align = (try field_ty.abiAlignmentAdvanced(pt, strat.toLazy())).scalar;
+    switch (layout) {
+        .@"packed" => unreachable,
+        .auto => if (pt.zcu.getTarget().ofmt != .c) return ty_abi_align,
+        .@"extern" => {},
+    }
+    // extern
+    if (field_ty.isAbiInt(pt.zcu) and field_ty.intInfo(pt.zcu).bits >= 128) {
+        return ty_abi_align.maxStrict(.@"16");
+    }
+    return ty_abi_align;
+}
+
 /// https://github.com/ziglang/zig/issues/17178 explored storing these bit offsets
 /// into the packed struct InternPool data rather than computing this on the
 /// fly, however it was found to perform worse when measured on real world
@@ -3701,3 +3854,100 @@ pub fn refValue(pt: Zcu.PerThread, val: InternPool.Index) Zcu.SemaError!InternPo
         .byte_offset = 0,
     } });
 }
+
+/// Get or put AIR for this panic cause.
+pub fn getPanicCauseInst(
+    pt: Zcu.PerThread,
+    cause: Zcu.Panic.Cause,
+) Zcu.CompileError!Air.Inst.Ref {
+    const tag_int: u32 = @intFromEnum(cause);
+    const tag_val: Value = try pt.enumValueFieldIndex(
+        Type.fromInterned(pt.zcu.panic.cause_ty).unionTagType(pt.zcu).?,
+        tag_int,
+    );
+    // Partial modes do not require the full panic cause union; get out with a
+    // panic ID.
+    if (pt.zcu.panic.mode != .generic) {
+        return Air.internedToRef(Value.toIntern(tag_val));
+    }
+    return Air.internedToRef(try pt.zcu.intern_pool.getUnion(pt.zcu.gpa, pt.tid, .{
+        .ty = pt.zcu.panic.cause_ty,
+        .tag = Value.toIntern(tag_val),
+        .val = switch (cause) {
+            // These panic causes each instantiate a single function.
+            .message,
+            .unwrapped_error,
+            .unwrapped_error_extra,
+            .returned_noreturn,
+            .reached_unreachable,
+            .corrupt_switch,
+            .index_out_of_bounds,
+            .reference_out_of_bounds,
+            .reference_out_of_order,
+            .reference_out_of_order_extra,
+            .accessed_null_value,
+            .divided_by_zero,
+            .memcpy_argument_aliasing,
+            .mismatched_memcpy_argument_lengths,
+            .mismatched_for_loop_capture_lengths,
+            .mismatched_sentinel_null,
+            .cast_to_ptr_from_invalid,
+            => .void_value,
+            // These panic causes are generic depending on the type of
+            // one operand.
+            //
+            // If panic data is disabled these each instantiate a single
+            // function.
+            .accessed_inactive_field,
+            .mismatched_sentinel,
+            .add_overflowed,
+            .sub_overflowed,
+            .mul_overflowed,
+            .div_overflowed,
+            .shl_overflowed,
+            .shr_overflowed,
+            .shift_amt_overflowed,
+            .div_with_remainder,
+            .cast_to_enum_from_invalid,
+            => |payload| Type.toIntern(payload),
+            // These panic causes are generic depending on the source
+            // and destination types of a cast operation.
+            //
+            // If panic data is disabled each instantiates a single function.
+            .cast_truncated_data,
+            .cast_to_int_from_invalid,
+            .cast_to_error_from_invalid,
+            .cast_to_unsigned_from_negative,
+            => |cast| try pt.intern(.{ .aggregate = .{
+                .ty = pt.zcu.panic.cast_ty,
+                .storage = .{ .elems = &.{ Type.toIntern(cast.to), Type.toIntern(cast.from) } },
+            } }),
+        },
+    }));
+}
+
+const Air = @import("../Air.zig");
+const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
+const Ast = std.zig.Ast;
+const AstGen = std.zig.AstGen;
+const BigIntConst = std.math.big.int.Const;
+const BigIntMutable = std.math.big.int.Mutable;
+const build_options = @import("build_options");
+const builtin = @import("builtin");
+const Cache = std.Build.Cache;
+const dev = @import("../dev.zig");
+const InternPool = @import("../InternPool.zig");
+const AnalUnit = InternPool.AnalUnit;
+const isUpDir = @import("../introspect.zig").isUpDir;
+const Liveness = @import("../Liveness.zig");
+const log = std.log.scoped(.zcu);
+const Module = @import("../Package.zig").Module;
+const Sema = @import("../Sema.zig");
+const std = @import("std");
+const target_util = @import("../target.zig");
+const trace = @import("../tracy.zig").trace;
+const Type = @import("../Type.zig");
+const Value = @import("../Value.zig");
+const Zcu = @import("../Zcu.zig");
+const Zir = std.zig.Zir;

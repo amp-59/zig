@@ -8954,6 +8954,7 @@ pub const GetFuncInstanceKey = struct {
     is_noinline: bool,
     generic_owner: Index,
     inferred_error_set: bool,
+    symbol: ?NullTerminatedString = null,
 };
 
 pub fn getFuncInstance(
@@ -9030,6 +9031,7 @@ pub fn getFuncInstance(
         func_extra_index,
         arg.alignment,
         arg.section,
+        arg.symbol,
     );
     return gop.put();
 }
@@ -9184,6 +9186,7 @@ pub fn getFuncInstanceIes(
         func_extra_index,
         arg.alignment,
         arg.section,
+        arg.symbol,
     );
 
     func_gop.putFinal(func_index);
@@ -9203,17 +9206,21 @@ fn finishFuncInstance(
     func_extra_index: u32,
     alignment: Alignment,
     section: OptionalNullTerminatedString,
+    symbol: ?NullTerminatedString,
 ) Allocator.Error!void {
     const fn_owner_nav = ip.getNav(ip.funcDeclInfo(generic_owner).owner_nav);
     const fn_namespace = ip.getCau(fn_owner_nav.analysis_owner.unwrap().?).namespace;
 
     // TODO: improve this name
-    const nav_name = try ip.getOrPutStringFmt(gpa, tid, "{}__anon_{d}", .{
+    const nav_name = symbol orelse try ip.getOrPutStringFmt(gpa, tid, "{}__anon_{d}", .{
         fn_owner_nav.name.fmt(ip), @intFromEnum(func_index),
     }, .no_embedded_nulls);
+    const fqn_name = symbol orelse try ip.namespacePtr(fn_namespace)
+        .internFullyQualifiedName(ip, gpa, tid, nav_name);
+
     const nav_index = try ip.createNav(gpa, tid, .{
         .name = nav_name,
-        .fqn = try ip.namespacePtr(fn_namespace).internFullyQualifiedName(ip, gpa, tid, nav_name),
+        .fqn = fqn_name,
         .val = func_index,
         .alignment = alignment,
         .@"linksection" = section,
@@ -12002,7 +12009,7 @@ pub fn funcSetIesResolved(ip: *InternPool, index: Index, ies: Index) void {
 pub fn funcDeclInfo(ip: *const InternPool, index: Index) Key.Func {
     const unwrapped_index = index.unwrap(ip);
     const item = unwrapped_index.getItem(ip);
-    assert(item.tag == .func_decl);
+    assert(item.tag == .func_decl or item.tag == .func_instance);
     return extraFuncDecl(unwrapped_index.tid, unwrapped_index.getExtra(ip), item.data);
 }
 

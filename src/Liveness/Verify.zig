@@ -204,17 +204,14 @@ fn verifyBody(self: *Verify, body: []const Air.Inst.Index) Error!void {
 
             // binary
             .add,
-            .add_safe,
             .add_optimized,
             .add_wrap,
             .add_sat,
             .sub,
-            .sub_safe,
             .sub_optimized,
             .sub_wrap,
             .sub_sat,
             .mul,
-            .mul_safe,
             .mul_optimized,
             .mul_wrap,
             .mul_sat,
@@ -270,6 +267,14 @@ fn verifyBody(self: *Verify, body: []const Air.Inst.Index) Error!void {
             => {
                 const bin_op = data[@intFromEnum(inst)].bin_op;
                 try self.verifyInstOperands(inst, .{ bin_op.lhs, bin_op.rhs, .none });
+            },
+            .add_safe,
+            .sub_safe,
+            .mul_safe,
+            => {
+                const safe_bin_op = data[@intFromEnum(inst)].pl_op;
+                const extra = self.air.extraData(Air.Bin, safe_bin_op.payload).data;
+                try self.verifyInstOperands(inst, .{ extra.lhs, extra.rhs, .none });
             },
             .add_with_overflow,
             .sub_with_overflow,

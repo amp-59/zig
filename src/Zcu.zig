@@ -214,39 +214,11 @@ all_type_references: std.ArrayListUnmanaged(TypeReference) = .empty,
 /// Freelist of indices in `all_type_references`.
 free_type_references: std.ArrayListUnmanaged(u32) = .empty,
 
-panic_messages: [PanicId.len]InternPool.Nav.Index.Optional = .{.none} ** PanicId.len,
-/// The panic function body.
-panic_func_index: InternPool.Index = .none,
-null_stack_trace: InternPool.Index = .none,
-
 generation: u32 = 0,
 
+panic: Panic = .{},
+
 pub const PerThread = @import("Zcu/PerThread.zig");
-
-pub const PanicId = enum {
-    reached_unreachable,
-    unwrap_null,
-    cast_to_null,
-    incorrect_alignment,
-    invalid_error_code,
-    cast_truncated_data,
-    negative_to_unsigned,
-    integer_overflow,
-    shl_overflow,
-    shr_overflow,
-    divide_by_zero,
-    exact_division_remainder,
-    integer_part_out_of_bounds,
-    corrupt_switch,
-    shift_rhs_too_big,
-    invalid_enum_value,
-    for_len_mismatch,
-    memcpy_len_mismatch,
-    memcpy_alias,
-    noreturn_returned,
-
-    pub const len = @typeInfo(PanicId).@"enum".fields.len;
-};
 
 pub const GlobalErrorSet = std.AutoArrayHashMapUnmanaged(InternPool.NullTerminatedString, void);
 
@@ -3539,3 +3511,365 @@ pub fn maybeUnresolveIes(zcu: *Zcu, func_index: InternPool.Index) !void {
         zcu.intern_pool.funcSetIesResolved(func_index, .none);
     }
 }
+
+pub const Panic = struct {
+    mode: Interface = undefined,
+    /// `builtin.Panic`
+    ns: InternPool.NamespaceIndex = @enumFromInt(0),
+    /// `builtin.panic`
+    handler_fn_inst: Air.Inst.Ref = .none,
+    /// `builtin.Panic.Data`
+    data_ty_fn_inst: Air.Inst.Ref = .none,
+    /// `builtin.Panic.Cause`
+    cause_ty: InternPool.Index = .none,
+    /// `builtin.Panic.Cause.Cast`
+    cast_ty: InternPool.Index = .none,
+    /// `?*const anyopaque`.
+    opt_ptr_anyopaque_ty: InternPool.Index = .none,
+
+    /// Cache for simple functions and data types.
+    ///
+    /// [0] __zig_panic_message
+    /// [1] __zig_panic_id
+    /// ...
+    /// [n] std.builtin.Panic.Data(cause_n)
+    ///
+    /// This serves three purposes:
+    ///
+    /// 1) It reduces the number of calls to `std.builtin.Panic.Data` by
+    ///    both canonical and generic modes.
+    ///
+    /// 2) It allows the canonical mode to be used by backends. If this
+    ///    implementation only cared about making canonical mode work, the
+    ///    cache size could be reduced from 128 position down to 32.
+    ///
+    ///    The generic mode does not require the type cache to work with
+    ///    backends, because the data type is always carried with the function.
+    ///
+    /// 3) It allows simple mode to bypass `getFuncInstance` because indices for
+    ///    both instances can be stored in the first two positions.
+    ///
+    /// Positions used by the simple mode and generic/canonical mode do not
+    /// overlap, because previous versions allowed changing the panic handler
+    /// at any time.
+    ///
+    cache: [cache_size]InternPool.Index = .{.none} ** cache_size,
+
+    pub const Interface = enum {
+        /// Fast build speed, no information about operands.
+        simple,
+        /// Slow build speed, all information about operands.
+        generic,
+        /// Medium build speed, intended for C interop. Reasonable information
+        /// about operands.
+        canonical,
+    };
+    pub const Cause = union(std.builtin.Panic.Id) {
+        message,
+        unwrapped_error,
+        unwrapped_error_extra,
+        returned_noreturn,
+        reached_unreachable,
+        corrupt_switch,
+        index_out_of_bounds,
+        reference_out_of_bounds,
+        reference_out_of_order,
+        reference_out_of_order_extra,
+        accessed_inactive_field: Type,
+        accessed_null_value,
+        divided_by_zero,
+        memcpy_argument_aliasing,
+        mismatched_memcpy_argument_lengths,
+        mismatched_for_loop_capture_lengths,
+        mismatched_sentinel: Type,
+        mismatched_sentinel_null,
+        shl_overflowed: Type,
+        shr_overflowed: Type,
+        shift_amt_overflowed: Type,
+        div_with_remainder: Type,
+        mul_overflowed: Type,
+        add_overflowed: Type,
+        sub_overflowed: Type,
+        div_overflowed: Type,
+        cast_truncated_data: Cast,
+        cast_to_enum_from_invalid: Type,
+        cast_to_error_from_invalid: Cast,
+        cast_to_ptr_from_invalid: Alignment,
+        cast_to_int_from_invalid: Cast,
+        cast_to_unsigned_from_negative: Cast,
+
+        const cache_offsets: [fields.len]u8 = blk: {
+            var res: [fields.len]u8 = .{0} ** fields.len;
+            // [0] __zig_panic_message
+            // [1] __zig_panic_id
+            var off: comptime_int = 2;
+            for (&res, 0..) |*ptr, idx| {
+                assert(fields[idx].value == idx);
+                ptr.* = off;
+                off +%= cacheAllowance(@enumFromInt(idx));
+            }
+            if (off >= cache_size) @compileLog(.{
+                .panic_cache_size = cache_size,
+                .max_cache_off = off,
+            });
+            break :blk res;
+        };
+
+        /// Returns the number of cache positions allowed for each panic ID.
+        fn cacheAllowance(id: std.builtin.Panic.Id) usize {
+            switch (id) {
+                .message,
+                .unwrapped_error,
+                .unwrapped_error_extra,
+                .returned_noreturn,
+                .reached_unreachable,
+                .corrupt_switch,
+                .index_out_of_bounds,
+                .reference_out_of_bounds,
+                .reference_out_of_order,
+                .reference_out_of_order_extra,
+                .accessed_null_value,
+                .divided_by_zero,
+                .memcpy_argument_aliasing,
+                .mismatched_sentinel_null,
+                .mismatched_memcpy_argument_lengths,
+                .mismatched_for_loop_capture_lengths,
+                .cast_to_ptr_from_invalid,
+                => {
+                    return 1;
+                },
+                .shl_overflowed,
+                .shr_overflowed,
+                .shift_amt_overflowed,
+                .div_with_remainder,
+                .mul_overflowed,
+                .add_overflowed,
+                .sub_overflowed,
+                .div_overflowed,
+                => {
+                    return 8;
+                },
+                .cast_truncated_data => {
+                    return 16;
+                },
+                .cast_to_unsigned_from_negative => {
+                    return 4;
+                },
+                .mismatched_sentinel,
+                .accessed_inactive_field,
+                .cast_to_enum_from_invalid,
+                .cast_to_int_from_invalid,
+                .cast_to_error_from_invalid,
+                => {
+                    return 0;
+                },
+            }
+        }
+
+        pub fn fromId(id: std.builtin.Panic.Id) Cause {
+            switch (id) {
+                inline else => |tag| return @unionInit(Cause, @tagName(tag), undefined),
+            }
+        }
+
+        pub fn getSimpleFnCacheElem(cause: Zcu.Panic.Cause, zcu: *Zcu) ?*InternPool.Index {
+            if (zcu.panic.mode == .simple) {
+                return &zcu.panic.cache[@intFromBool(cause != .message)];
+            }
+            return null;
+        }
+
+        /// Returns a pointer to a cache element under the following conditions:
+        ///  - The panic interface mode is `generic` or `canonical`.
+        ///  - The panic cause has an associated cache element.
+        ///  - The value for this element does not indicate the result is a
+        ///    work-in-progress (`undef`) in another thread.
+        pub fn acquireGenericCacheElem(cause: Zcu.Panic.Cause, zcu: *Zcu) ?*InternPool.Index {
+            if (switch (zcu.panic.mode) {
+                .simple => unreachable,
+                .canonical, .generic => cause.genericCacheIndex(),
+            }) |idx| {
+                const ret: *InternPool.Index = &zcu.panic.cache[idx];
+                while (@cmpxchgWeak(InternPool.Index, ret, .none, .undef, .seq_cst, .seq_cst)) |res| {
+                    if (res != .undef) break;
+                }
+                return ret;
+            }
+            return null;
+        }
+
+        pub fn releaseGenericCacheElem(cause: Zcu.Panic.Cause, zcu: *Zcu, val: InternPool.Index) void {
+            if (switch (zcu.panic.mode) {
+                .simple => unreachable,
+                .canonical, .generic => cause.genericCacheIndex(),
+            }) |idx| {
+                const ret: *InternPool.Index = &zcu.panic.cache[idx];
+                if (@cmpxchgStrong(InternPool.Index, ret, .undef, val, .seq_cst, .seq_cst)) |res| {
+                    if (res != val) unreachable;
+                }
+            }
+        }
+
+        /// Compute index of panic type cache for this panic cause.
+        fn genericCacheIndex(cause: Cause) ?usize {
+            const tag: u8 = switch (cause) {
+                // These are the non-`u8`, non-zero sentinels. These are
+                // almost non-existent. Notable example: `[*:null]?[*:0]u8`.
+                //
+                // No positions.
+                .mismatched_sentinel,
+
+                // This cause might be merged with `cast_truncated_data`
+                // or the other way. Mixed float/int operands--like
+                // @divExact--are not an issue for any mode.
+                //
+                // No positions right now.
+                .cast_to_int_from_invalid,
+
+                // These three are significant problems for generic mode
+                // build performance, due to the actual variety of combinations
+                // seen in regular code.
+                //
+                // No positions because the subject type is a namespace and
+                // can not be predicted or matched in constant time.
+                .accessed_inactive_field,
+                .cast_to_enum_from_invalid,
+                .cast_to_error_from_invalid,
+                => {
+                    return null;
+                },
+
+                // These are not part of any set.
+                .message,
+                .unwrapped_error,
+                .unwrapped_error_extra,
+                .returned_noreturn,
+                .reached_unreachable,
+                .corrupt_switch,
+                .index_out_of_bounds,
+                .reference_out_of_bounds,
+                .reference_out_of_order,
+                .reference_out_of_order_extra,
+                .accessed_null_value,
+                .divided_by_zero,
+                .memcpy_argument_aliasing,
+                .mismatched_memcpy_argument_lengths,
+                .mismatched_for_loop_capture_lengths,
+                .mismatched_sentinel_null,
+                .cast_to_ptr_from_invalid,
+                => 0,
+
+                // A set for the most common checked arithmetic operations.
+                //
+                // Floats are only allowed for `div_with_remainder`, and that
+                // is such an uncommon use-case that it is currently not tested
+                // by the safety testsuite.
+                .add_overflowed,
+                .sub_overflowed,
+                .mul_overflowed,
+                .div_overflowed,
+                .shl_overflowed,
+                .shr_overflowed,
+                .shift_amt_overflowed,
+                .div_with_remainder,
+                => |num_type| switch (Type.toIntern(num_type)) {
+                    .u8_type => 0,
+                    .i8_type => 1,
+                    .u16_type => 2,
+                    .i16_type => 3,
+                    .u32_type => 4,
+                    .i32_type => 5,
+                    .u64_type => 6,
+                    .i64_type => 7,
+                    else => {
+                        return null;
+                    },
+                },
+
+                // Two sets for the most common integer casts.
+                .cast_truncated_data,
+                => |cast| switch (Cast.toKey(cast)) {
+                    .to_i64_from_u64 => 0,
+                    .to_i32_from_u32 => 1,
+                    .to_i16_from_u16 => 2,
+                    .to_i8_from_u8 => 3,
+                    .to_u32_from_u64 => 4,
+                    .to_u16_from_u64 => 5,
+                    .to_u8_from_u64 => 6,
+                    .to_i32_from_i64 => 7,
+                    .to_i16_from_i64 => 8,
+                    .to_i8_from_i64 => 9,
+                    .to_u16_from_u32 => 10,
+                    .to_u8_from_u32 => 11,
+                    .to_i16_from_i32 => 12,
+                    .to_i8_from_i32 => 13,
+                    .to_u8_from_u16 => 14,
+                    .to_i8_from_i16 => 15,
+                    else => {
+                        return null;
+                    },
+                },
+                .cast_to_unsigned_from_negative,
+                => |cast| switch (Cast.toKey(cast)) {
+                    .to_u64_from_i64 => 0,
+                    .to_u32_from_i32 => 1,
+                    .to_u16_from_i16 => 2,
+                    .to_u8_from_i8 => 3,
+                    else => {
+                        return null;
+                    },
+                },
+            };
+
+            if (builtin.mode == .Debug) {
+                assert(tag < cacheAllowance(cause));
+            }
+
+            return cache_offsets[@intFromEnum(cause)] + tag;
+        }
+    };
+    pub const Cast = struct {
+        to: Type,
+        from: Type,
+        fn toKey(cast: Cast) Key {
+            return @enumFromInt(Key.make(cast.to.ip_index, cast.from.ip_index));
+        }
+        const Key = enum(u64) {
+            to_i8_from_i16 = make(.i8_type, .i16_type),
+            to_i8_from_i32 = make(.i8_type, .i32_type),
+            to_i8_from_i64 = make(.i8_type, .i64_type),
+
+            to_i8_from_u8 = make(.i8_type, .u8_type),
+
+            to_i16_from_i32 = make(.i16_type, .i32_type),
+            to_i16_from_i64 = make(.i16_type, .i64_type),
+            to_i16_from_u16 = make(.i16_type, .u16_type),
+
+            to_i32_from_i64 = make(.i32_type, .i64_type),
+            to_i32_from_u32 = make(.i32_type, .u32_type),
+
+            to_i64_from_u64 = make(.i64_type, .u64_type),
+
+            to_u8_from_i8 = make(.u8_type, .i8_type),
+            to_u8_from_u16 = make(.u8_type, .u16_type),
+            to_u8_from_u32 = make(.u8_type, .u32_type),
+            to_u8_from_u64 = make(.u8_type, .u64_type),
+
+            to_u16_from_i16 = make(.u16_type, .i16_type),
+            to_u16_from_u32 = make(.u16_type, .u32_type),
+            to_u16_from_u64 = make(.u16_type, .u64_type),
+
+            to_u32_from_i32 = make(.u32_type, .i32_type),
+            to_u32_from_u64 = make(.u32_type, .u64_type),
+
+            to_u64_from_i64 = make(.u64_type, .i64_type),
+            _,
+            fn make(to: InternPool.Index, from: InternPool.Index) u64 {
+                return @as(u64, @intFromEnum(to)) << 32 | @intFromEnum(from);
+            }
+        };
+    };
+
+    const cache_size: comptime_int = 128;
+    const fields: []const std.builtin.Type.EnumField = @typeInfo(std.builtin.Panic.Id).@"enum".fields;
+};

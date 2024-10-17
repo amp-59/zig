@@ -1,8 +1,7 @@
 const std = @import("std");
 
-pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = stack_trace;
-    if (std.mem.eql(u8, message, "integer overflow")) {
+pub fn panic2(cause: std.builtin.Panic.Cause, _: anytype) noreturn {
+    if (cause == .div_overflowed) {
         std.process.exit(0);
     }
     std.process.exit(1);

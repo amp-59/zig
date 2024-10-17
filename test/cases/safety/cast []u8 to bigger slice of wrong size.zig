@@ -1,9 +1,12 @@
 const std = @import("std");
 
-pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = stack_trace;
-    if (std.mem.eql(u8, message, "exact division produced remainder")) {
-        std.process.exit(0);
+pub fn panic2(cause: std.builtin.Panic.Cause, data: anytype) noreturn {
+    if (cause == .div_with_remainder) {
+        if (data.lhs == 5 and data.rhs == 4) {
+            std.process.exit(0);
+        } else {
+            std.debug.print("{any}\n", .{data});
+        }
     }
     std.process.exit(1);
 }

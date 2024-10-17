@@ -1,12 +1,14 @@
 const std = @import("std");
 
-pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = stack_trace;
-    if (std.mem.eql(u8, message, "integer cast truncated bits")) {
-        std.process.exit(0);
+pub fn panic2(cause: std.builtin.Panic.Cause, data: anytype) noreturn {
+    if (cause == .cast_truncated_data) {
+        if (data == 245) {
+            std.process.exit(0);
+        }
     }
     std.process.exit(1);
 }
+
 pub fn main() !void {
     var value: u8 = 245;
     _ = &value;

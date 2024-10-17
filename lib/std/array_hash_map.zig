@@ -1700,6 +1700,7 @@ pub fn ArrayHashMapUnmanaged(
 
         /// Must `ensureTotalCapacity`/`ensureUnusedCapacity` before calling this.
         fn getOrPutInternal(self: *Self, key: anytype, ctx: anytype, header: *IndexHeader, comptime I: type) GetOrPutResult {
+            @setRuntimeSafety(false);
             const slice = self.entries.slice();
             const hashes_array = if (store_hash) slice.items(.hash) else {};
             const keys_array = slice.items(.key);

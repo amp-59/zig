@@ -1,9 +1,14 @@
 const std = @import("std");
 
-pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = stack_trace;
-    if (std.mem.eql(u8, message, "sentinel mismatch: expected null, found i32@10")) {
-        std.process.exit(0);
+pub fn panic2(cause: std.builtin.Panic.Cause, data: anytype) noreturn {
+    if (cause == .mismatched_sentinel) {
+        if (cause.mismatched_sentinel == ?*i32) {
+            if (data.expected == null and
+                data.actual == @as(*i32, @ptrFromInt(16)))
+            {
+                std.process.exit(0);
+            }
+        }
     }
     std.process.exit(1);
 }

@@ -1,12 +1,12 @@
 const std = @import("std");
 
-pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = stack_trace;
-    if (std.mem.eql(u8, message, "integer overflow")) {
+pub fn panic2(cause: std.builtin.Panic.Cause, _: anytype) noreturn {
+    if (cause == .sub_overflowed) {
         std.process.exit(0);
     }
     std.process.exit(1);
 }
+
 pub fn main() !void {
     const a: @Vector(4, u32) = [_]u32{ 1, 2, 8, 4 };
     const b: @Vector(4, u32) = [_]u32{ 5, 6, 7, 8 };

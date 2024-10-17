@@ -1,9 +1,10 @@
 const std = @import("std");
 
-pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = stack_trace;
-    if (std.mem.eql(u8, message, "start index 10 is larger than end index 1")) {
-        std.process.exit(0);
+pub fn panic2(cause: std.builtin.Panic.Cause, data: anytype) noreturn {
+    if (cause == .reference_out_of_order) {
+        if (data.start == 10 and data.end == 1) {
+            std.process.exit(0);
+        }
     }
     std.process.exit(1);
 }

@@ -24,17 +24,14 @@ fn checkBody(air: Air, body: []const Air.Inst.Index, zcu: *Zcu) bool {
             },
 
             .add,
-            .add_safe,
             .add_optimized,
             .add_wrap,
             .add_sat,
             .sub,
-            .sub_safe,
             .sub_optimized,
             .sub_wrap,
             .sub_sat,
             .mul,
-            .mul_safe,
             .mul_optimized,
             .mul_wrap,
             .mul_sat,
@@ -90,6 +87,15 @@ fn checkBody(air: Air, body: []const Air.Inst.Index, zcu: *Zcu) bool {
             => {
                 if (!checkRef(data.bin_op.lhs, zcu)) return false;
                 if (!checkRef(data.bin_op.rhs, zcu)) return false;
+            },
+
+            .add_safe,
+            .mul_safe,
+            .sub_safe,
+            => {
+                const ops: *const Air.Bin = @ptrCast(air.extra[data.pl_op.payload..][0..2]);
+                if (!checkRef(ops.lhs, zcu)) return false;
+                if (!checkRef(ops.rhs, zcu)) return false;
             },
 
             .not,

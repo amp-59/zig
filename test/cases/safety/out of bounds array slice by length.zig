@@ -1,12 +1,16 @@
 const std = @import("std");
 
-pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = stack_trace;
-    if (std.mem.eql(u8, message, "index out of bounds: index 16, len 5")) {
-        std.process.exit(0);
+pub fn panic2(cause: std.builtin.Panic.Cause, data: anytype) noreturn {
+    if (cause == .reference_out_of_bounds) {
+        // These values are conceptually wrong because `analyzeSlice` does not
+        // support `reference_out_of_order_extra`.
+        if (data.start == 16 and data.end == 5) {
+            std.process.exit(0);
+        }
     }
     std.process.exit(1);
 }
+
 pub fn main() !void {
     var buf: [5]u8 = undefined;
     _ = buf[foo(6)..][0..10];

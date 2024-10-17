@@ -1,12 +1,12 @@
 const std = @import("std");
 
-pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = stack_trace;
-    if (std.mem.eql(u8, message, "switch on corrupt value")) {
+pub fn panic2(cause: std.builtin.Panic.Cause, _: anytype) noreturn {
+    if (cause == .cast_to_enum_from_invalid) {
         std.process.exit(0);
     }
     std.process.exit(1);
 }
+
 const E = enum(u16) {
     one = 1,
     two = 2,

@@ -1,8 +1,7 @@
 const std = @import("std");
 
-pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = stack_trace;
-    if (std.mem.eql(u8, message, "incorrect alignment")) {
+pub fn panic2(cause: std.builtin.Panic.Cause, data: anytype) noreturn {
+    if (cause == .cast_to_ptr_from_invalid and data.alignment == 4) {
         std.process.exit(0);
     }
     std.process.exit(1);

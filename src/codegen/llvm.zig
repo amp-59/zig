@@ -5092,9 +5092,9 @@ pub const FuncGen = struct {
                 .mul_wrap      => try self.airMulWrap(inst),
                 .mul_sat       => try self.airMulSat(inst),
 
-                .add_safe => try self.airSafeArithmetic(inst, .@"sadd.with.overflow", .@"uadd.with.overflow"),
-                .sub_safe => try self.airSafeArithmetic(inst, .@"ssub.with.overflow", .@"usub.with.overflow"),
-                .mul_safe => try self.airSafeArithmetic(inst, .@"smul.with.overflow", .@"umul.with.overflow"),
+                .add_safe => try self.airSafeArithmetic(inst, .add_overflowed),
+                .sub_safe => try self.airSafeArithmetic(inst, .sub_overflowed),
+                .mul_safe => try self.airSafeArithmetic(inst, .mul_overflowed),
 
                 .div_float => try self.airDivFloat(inst, .normal),
                 .div_trunc => try self.airDivTrunc(inst, .normal),
@@ -8376,49 +8376,120 @@ pub const FuncGen = struct {
         return self.wip.bin(if (scalar_ty.isSignedInt(zcu)) .@"add nsw" else .@"add nuw", lhs, rhs, "");
     }
 
-    fn airSafeArithmetic(
+    /// Build call to any panic interface.
+    fn buildPanic(
         fg: *FuncGen,
-        inst: Air.Inst.Index,
-        signed_intrinsic: Builder.Intrinsic,
-        unsigned_intrinsic: Builder.Intrinsic,
-    ) !Builder.Value {
-        const o = fg.ng.object;
-        const zcu = o.pt.zcu;
-
-        const bin_op = fg.air.instructions.items(.data)[@intFromEnum(inst)].bin_op;
-        const lhs = try fg.resolveInst(bin_op.lhs);
-        const rhs = try fg.resolveInst(bin_op.rhs);
-        const inst_ty = fg.typeOfIndex(inst);
-        const scalar_ty = inst_ty.scalarType(zcu);
-
-        const intrinsic = if (scalar_ty.isSignedInt(zcu)) signed_intrinsic else unsigned_intrinsic;
-        const llvm_inst_ty = try o.lowerType(inst_ty);
-        const results =
-            try fg.wip.callIntrinsic(.normal, .none, intrinsic, &.{llvm_inst_ty}, &.{ lhs, rhs }, "");
-
-        const overflow_bits = try fg.wip.extractValue(results, &.{1}, "");
-        const overflow_bits_ty = overflow_bits.typeOfWip(&fg.wip);
-        const overflow_bit = if (overflow_bits_ty.isVector(&o.builder))
-            try fg.wip.callIntrinsic(
-                .normal,
-                .none,
-                .@"vector.reduce.or",
-                &.{overflow_bits_ty},
-                &.{overflow_bits},
-                "",
-            )
-        else
-            overflow_bits;
-
-        const fail_block = try fg.wip.block(1, "OverflowFail");
-        const ok_block = try fg.wip.block(1, "OverflowOk");
-        _ = try fg.wip.brCond(overflow_bit, fail_block, ok_block, .none);
-
+        id: std.builtin.Panic.Id,
+        panic_ip: InternPool.Index,
+        values: []const Builder.Value,
+    ) !void {
+        const panic_func: InternPool.Key.Func = fg.ng.object.pt.zcu.funcInfo(panic_ip);
+        const panic_func_nav: InternPool.Nav = fg.ng.object.pt.zcu.intern_pool.getNav(panic_func.owner_nav);
+        const panic_func_nav_ty: Type = Type.fromInterned(panic_func_nav.typeOf(&fg.ng.object.pt.zcu.intern_pool));
+        const fn_info: InternPool.Key.FuncType = fg.ng.object.pt.zcu.typeToFunc(panic_func_nav_ty).?;
+        var fields: [4]Builder.Value = .{.none} ** 4;
+        assert(values.len < fields.len);
+        const param_types: []InternPool.Index = fn_info.param_types.get(&fg.ng.object.pt.zcu.intern_pool);
+        const panic: Builder.Function.Index = try fg.ng.object.resolveLlvmFunction(panic_func.owner_nav);
+        switch (fg.ng.object.pt.zcu.panic.mode) {
+            .simple => {
+                assert(panic_func.generic_owner != .none);
+                assert(id != .message);
+                const data_arg: Builder.Value = blk: {
+                    const id_ty: Type = Type.fromInterned(fg.ng.object.pt.zcu.panic.cause_ty).unionTagType(fg.ng.object.pt.zcu).?;
+                    const tag_value: Value = try fg.ng.object.pt.enumValueFieldIndex(id_ty, @intFromEnum(id));
+                    const tag: Builder.Constant = try fg.ng.object.lowerValue(tag_value.toIntern());
+                    break :blk Builder.Constant.toValue(tag);
+                };
+                const cc: Builder.CallConv = toLlvmCallConv(fn_info.cc, fg.ng.object.pt.zcu.getTarget());
+                const fn_ty: Builder.Type = panic.typeOf(&fg.ng.object.builder);
+                const fn_val: Builder.Value = panic.toValue(&fg.ng.object.builder);
+                _ = try fg.wip.call(.normal, cc, .none, fn_ty, fn_val, &.{data_arg}, "");
+                _ = try fg.wip.@"unreachable"();
+            },
+            .generic => {
+                assert(panic_func.generic_owner != .none);
+                assert(id != .message);
+                // fn (data: anytype) noreturn
+                const data_ty: Type = Type.fromInterned(param_types[0]);
+                var data_arg: Builder.Value = values[0];
+                if (data_ty.zigTypeTag(fg.ng.object.pt.zcu) == .@"struct") {
+                    const data_ty_llvm: Builder.Type = try fg.ng.object.lowerType(data_ty);
+                    for (values, 0..) |value, index| fields[fg.ng.object.llvmFieldIndex(data_ty, index).?] = value;
+                    const data_inst: Builder.Value = try fg.wip.buildAggregate(data_ty_llvm, fields[0..values.len], "");
+                    const alignment: Builder.Alignment = data_ty.abiAlignment(fg.ng.object.pt.zcu).toLlvm();
+                    const ptr: Builder.Value = try fg.buildAlloca(data_ty_llvm, alignment);
+                    _ = try fg.wip.store(.normal, data_inst, ptr, alignment);
+                    data_arg = ptr;
+                }
+                const cc: Builder.CallConv = toLlvmCallConv(fn_info.cc, fg.ng.object.pt.zcu.getTarget());
+                const fn_ty: Builder.Type = panic.typeOf(&fg.ng.object.builder);
+                const fn_val: Builder.Value = panic.toValue(&fg.ng.object.builder);
+                _ = try fg.wip.call(.normal, cc, .none, fn_ty, fn_val, &.{data_arg}, "");
+                _ = try fg.wip.@"unreachable"();
+            },
+            .canonical => {
+                assert(panic_func.generic_owner == .none);
+                // Fabricate fieldless cause for this ID.
+                const cause: Zcu.Panic.Cause = Zcu.Panic.Cause.fromId(id);
+                // fn (id: builtin.Panic.Id, ptr: ?*anyopaque) noreturn
+                const id_ty: Type = Type.fromInterned(fg.ng.object.pt.zcu.panic.cause_ty).unionTagType(fg.ng.object.pt.zcu).?;
+                const ptr_ty: Type = Type.fromInterned(fg.ng.object.pt.zcu.panic.opt_ptr_anyopaque_ty);
+                // Get panic ID.
+                const tag_value: Value = try fg.ng.object.pt.enumValueFieldIndex(id_ty, @intFromEnum(id));
+                const tag: Builder.Constant = try fg.ng.object.lowerValue(Value.toIntern(tag_value));
+                const id_arg: Builder.Value = Builder.Constant.toValue(tag);
+                // Initialise data argument with nullptr.
+                var data_arg: Builder.Value = Builder.Constant.toValue(try fg.ng.object.builder.nullConst(try fg.ng.object.lowerType(ptr_ty)));
+                if (cause.acquireGenericCacheElem(fg.ng.object.pt.zcu)) |ip_index| {
+                    assert(ip_index.* != .undef);
+                    if (ip_index.* != .null_type) {
+                        const data_ty: Type = Type.fromInterned(ip_index.*);
+                        if (data_ty.zigTypeTag(fg.ng.object.pt.zcu) == .@"struct") {
+                            const data_ty_llvm: Builder.Type = try fg.ng.object.lowerType(data_ty);
+                            for (values, 0..) |value, index| fields[fg.ng.object.llvmFieldIndex(data_ty, index).?] = value;
+                            const data_inst: Builder.Value = try fg.wip.buildAggregate(data_ty_llvm, fields[0..values.len], "");
+                            const alignment: Builder.Alignment = data_ty.abiAlignment(fg.ng.object.pt.zcu).toLlvm();
+                            const data_ptr: Builder.Value = try fg.buildAlloca(data_ty_llvm, alignment);
+                            _ = try fg.wip.store(.normal, data_inst, data_ptr, alignment);
+                            data_arg = data_ptr;
+                        }
+                    }
+                }
+                const cc: Builder.CallConv = toLlvmCallConv(fn_info.cc, fg.ng.object.pt.zcu.getTarget());
+                const fn_ty: Builder.Type = panic.typeOf(&fg.ng.object.builder);
+                const fn_val: Builder.Value = panic.toValue(&fg.ng.object.builder);
+                _ = try fg.wip.call(.normal, cc, .none, fn_ty, fn_val, &.{ id_arg, data_arg }, "");
+                _ = try fg.wip.@"unreachable"();
+            },
+        }
+    }
+    fn airSafeArithmetic(fg: *FuncGen, inst: Air.Inst.Index, id: std.builtin.Panic.Id) !Builder.Value {
+        const pl_op = fg.air.instructions.items(.data)[@intFromEnum(inst)].pl_op;
+        const operands: *const Air.Bin = @ptrCast(fg.air.extra[pl_op.payload..][0..2]);
+        const lhs: Builder.Value = try fg.resolveInst(operands.lhs);
+        const rhs: Builder.Value = try fg.resolveInst(operands.rhs);
+        const inst_ty: Type = fg.typeOfIndex(inst);
+        const inst_ty_llvm: Builder.Type = try fg.ng.object.lowerType(inst_ty);
+        const scalar_ty: Type = inst_ty.scalarType(fg.ng.object.pt.zcu);
+        const intrinsic: Builder.Intrinsic = switch (id) {
+            .add_overflowed => if (scalar_ty.isSignedInt(fg.ng.object.pt.zcu)) .@"sadd.with.overflow" else .@"uadd.with.overflow",
+            .sub_overflowed => if (scalar_ty.isSignedInt(fg.ng.object.pt.zcu)) .@"ssub.with.overflow" else .@"usub.with.overflow",
+            .mul_overflowed => if (scalar_ty.isSignedInt(fg.ng.object.pt.zcu)) .@"smul.with.overflow" else .@"umul.with.overflow",
+            else => unreachable,
+        };
+        const res: Builder.Value = try fg.wip.callIntrinsic(.normal, .none, intrinsic, &.{inst_ty_llvm}, &.{ lhs, rhs }, "");
+        var cond: Builder.Value = try fg.wip.extractValue(res, &.{1}, "");
+        if (cond.typeOfWip(&fg.wip).isVector(&fg.ng.object.builder)) {
+            cond = try fg.wip.callIntrinsic(.normal, .none, .@"vector.reduce.or", &.{cond.typeOfWip(&fg.wip)}, &.{cond}, "");
+        }
+        const fail_block: Builder.Function.Block.Index = try fg.wip.block(1, "Overflowed");
+        const ok_block: Builder.Function.Block.Index = try fg.wip.block(1, "Ok");
+        _ = try fg.wip.brCond(cond, fail_block, ok_block, .else_likely);
         fg.wip.cursor = .{ .block = fail_block };
-        try fg.buildSimplePanic(.integer_overflow);
-
+        try fg.buildPanic(id, pl_op.operand.toInterned().?, &.{ lhs, rhs });
         fg.wip.cursor = .{ .block = ok_block };
-        return fg.wip.extractValue(results, &.{0}, "");
+        return fg.wip.extractValue(res, &.{0}, "");
     }
 
     fn airAddWrap(self: *FuncGen, inst: Air.Inst.Index) !Builder.Value {

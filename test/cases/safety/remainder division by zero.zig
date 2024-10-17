@@ -1,12 +1,12 @@
 const std = @import("std");
 
-pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = stack_trace;
-    if (std.mem.eql(u8, message, "division by zero")) {
+pub fn panic2(cause: std.builtin.Panic.Cause, _: anytype) noreturn {
+    if (cause == .divided_by_zero) {
         std.process.exit(0);
     }
     std.process.exit(1);
 }
+
 pub fn main() !void {
     const x = rem0(999, 0);
     _ = x;

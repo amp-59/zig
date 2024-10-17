@@ -79,6 +79,39 @@ pub fn isSelfComparable(ty: Type, zcu: *const Zcu, is_equality_cmp: bool) bool {
     };
 }
 
+pub fn allowsSentinel(ty: Type, mod: *const Zcu) bool {
+    return switch (ty.zigTypeTag(mod)) {
+        .int,
+        .float,
+        .comptime_float,
+        .comptime_int,
+        .bool,
+        .type,
+        .void,
+        .error_set,
+        .@"fn",
+        .@"opaque",
+        .@"anyframe",
+        .@"enum",
+        .enum_literal,
+        => true,
+
+        .vector,
+        .noreturn,
+        .array,
+        .@"struct",
+        .undefined,
+        .null,
+        .error_union,
+        .@"union",
+        .frame,
+        => false,
+
+        .pointer => !ty.isSlice(mod),
+        .optional => allowsSentinel(ty.optionalChild(mod), mod),
+    };
+}
+
 /// If it is a function pointer, returns the function type. Otherwise returns null.
 pub fn castPtrToFn(ty: Type, zcu: *const Zcu) ?Type {
     if (ty.zigTypeTag(zcu) != .pointer) return null;

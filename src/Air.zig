@@ -49,7 +49,7 @@ pub const Inst = struct {
         /// that contains this instruction.
         /// This instruction will only be emitted if the backend has the
         /// feature `safety_checked_instructions`.
-        /// Uses the `bin_op` field.
+        /// Uses the `pl_op` field.
         add_safe,
         /// Float addition. The instruction is allowed to have equal or more
         /// mathematical accuracy than strict IEEE-757 float addition.
@@ -69,7 +69,7 @@ pub const Inst = struct {
         /// Float or integer subtraction. For integers, wrapping is undefined behavior.
         /// Both operands are guaranteed to be the same type, and the result type
         /// is the same as both operands.
-        /// Uses the `bin_op` field.
+        /// Uses the `pl_op` field.
         sub,
         /// Integer subtraction. Wrapping is a safety panic.
         /// Both operands are guaranteed to be the same type, and the result type
@@ -78,7 +78,7 @@ pub const Inst = struct {
         /// that contains this instruction.
         /// This instruction will only be emitted if the backend has the
         /// feature `safety_checked_instructions`.
-        /// Uses the `bin_op` field.
+        /// Uses the `pl_op` field.
         sub_safe,
         /// Float subtraction. The instruction is allowed to have equal or more
         /// mathematical accuracy than strict IEEE-757 float subtraction.
@@ -1294,15 +1294,12 @@ pub fn typeOfIndex(air: *const Air, inst: Air.Inst.Index, ip: *const InternPool)
     const datas = air.instructions.items(.data);
     switch (air.instructions.items(.tag)[@intFromEnum(inst)]) {
         .add,
-        .add_safe,
         .add_wrap,
         .add_sat,
         .sub,
-        .sub_safe,
         .sub_wrap,
         .sub_sat,
         .mul,
-        .mul_safe,
         .mul_wrap,
         .mul_sat,
         .div_float,
@@ -1333,6 +1330,14 @@ pub fn typeOfIndex(air: *const Air, inst: Air.Inst.Index, ip: *const InternPool)
         .rem_optimized,
         .mod_optimized,
         => return air.typeOf(datas[@intFromEnum(inst)].bin_op.lhs, ip),
+
+        .add_safe,
+        .sub_safe,
+        .mul_safe,
+        => {
+            const ops: *const Bin = @ptrCast(air.extra[datas[@intFromEnum(inst)].pl_op.payload..][0..2]);
+            return air.typeOf(ops.lhs, ip);
+        },
 
         .sqrt,
         .sin,

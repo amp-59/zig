@@ -171,6 +171,7 @@ pub fn analyze(gpa: Allocator, air: Air, intern_pool: *InternPool) Allocator.Err
         data.old_extra = a.extra;
         a.extra = .{};
         try analyzeBody(&a, .main_analysis, &data, main_body);
+
         assert(data.live_set.count() == 0);
     }
 
@@ -237,17 +238,14 @@ pub fn categorizeOperand(
     const operand_ref = operand.toRef();
     switch (air_tags[@intFromEnum(inst)]) {
         .add,
-        .add_safe,
         .add_wrap,
         .add_sat,
         .add_optimized,
         .sub,
-        .sub_safe,
         .sub_wrap,
         .sub_sat,
         .sub_optimized,
         .mul,
-        .mul_safe,
         .mul_wrap,
         .mul_sat,
         .mul_optimized,
@@ -295,6 +293,18 @@ pub fn categorizeOperand(
             const o = air_datas[@intFromEnum(inst)].bin_op;
             if (o.lhs == operand_ref) return matchOperandSmallIndex(l, inst, 0, .none);
             if (o.rhs == operand_ref) return matchOperandSmallIndex(l, inst, 1, .none);
+            return .none;
+        },
+
+        .add_safe,
+        .sub_safe,
+        .mul_safe,
+        => {
+            const pl_op = air_datas[@intFromEnum(inst)].pl_op;
+            const extra = air.extraData(Air.Bin, pl_op.payload).data;
+            if (pl_op.operand == operand_ref) return matchOperandSmallIndex(l, inst, 0, .none);
+            if (extra.lhs == operand_ref) return matchOperandSmallIndex(l, inst, 1, .none);
+            if (extra.rhs == operand_ref) return matchOperandSmallIndex(l, inst, 2, .none);
             return .none;
         },
 
@@ -894,17 +904,14 @@ fn analyzeInst(
 
     switch (inst_tags[@intFromEnum(inst)]) {
         .add,
-        .add_safe,
         .add_optimized,
         .add_wrap,
         .add_sat,
         .sub,
-        .sub_safe,
         .sub_optimized,
         .sub_wrap,
         .sub_sat,
         .mul,
-        .mul_safe,
         .mul_optimized,
         .mul_wrap,
         .mul_sat,
@@ -960,6 +967,15 @@ fn analyzeInst(
         => {
             const o = inst_datas[@intFromEnum(inst)].bin_op;
             return analyzeOperands(a, pass, data, inst, .{ o.lhs, o.rhs, .none });
+        },
+
+        .add_safe,
+        .sub_safe,
+        .mul_safe,
+        => {
+            const o = inst_datas[@intFromEnum(inst)].pl_op;
+            const extra = a.air.extraData(Air.Bin, o.payload).data;
+            return analyzeOperands(a, pass, data, inst, .{ extra.lhs, extra.rhs, .none });
         },
 
         .vector_store_elem => {

@@ -92,7 +92,7 @@ pub const Wyhash = struct {
     }
 
     // Copies the core wyhash state but not any internal buffers.
-    inline fn shallowCopy(self: *Wyhash) Wyhash {
+    fn shallowCopy(self: *Wyhash) Wyhash {
         return .{
             .a = self.a,
             .b = self.b,
@@ -103,7 +103,7 @@ pub const Wyhash = struct {
         };
     }
 
-    inline fn smallKey(self: *Wyhash, input: []const u8) void {
+    fn smallKey(self: *Wyhash, input: []const u8) void {
         std.debug.assert(input.len <= 16);
 
         if (input.len >= 4) {
@@ -120,41 +120,41 @@ pub const Wyhash = struct {
         }
     }
 
-    inline fn round(self: *Wyhash, input: *const [48]u8) void {
-        inline for (0..3) |i| {
+    fn round(self: *Wyhash, input: *const [48]u8) void {
+        for (0..3) |i| {
             const a = read(8, input[8 * (2 * i) ..]);
             const b = read(8, input[8 * (2 * i + 1) ..]);
             self.state[i] = mix(a ^ secret[i + 1], b ^ self.state[i]);
         }
     }
 
-    inline fn read(comptime bytes: usize, data: []const u8) u64 {
+    fn read(comptime bytes: usize, data: []const u8) u64 {
         std.debug.assert(bytes <= 8);
         const T = std.meta.Int(.unsigned, 8 * bytes);
         return @as(u64, std.mem.readInt(T, data[0..bytes], .little));
     }
 
-    inline fn mum(a: *u64, b: *u64) void {
+    fn mum(a: *u64, b: *u64) void {
         const x = @as(u128, a.*) *% b.*;
         a.* = @as(u64, @truncate(x));
         b.* = @as(u64, @truncate(x >> 64));
     }
 
-    inline fn mix(a_: u64, b_: u64) u64 {
+    fn mix(a_: u64, b_: u64) u64 {
         var a = a_;
         var b = b_;
         mum(&a, &b);
         return a ^ b;
     }
 
-    inline fn final0(self: *Wyhash) void {
+    fn final0(self: *Wyhash) void {
         self.state[0] ^= self.state[1] ^ self.state[2];
     }
 
     // input_lb must be at least 16-bytes long (in shorter key cases the smallKey function will be
     // used instead). We use an index into a slice to for comptime processing as opposed to if we
     // used pointers.
-    inline fn final1(self: *Wyhash, input_lb: []const u8, start_pos: usize) void {
+    fn final1(self: *Wyhash, input_lb: []const u8, start_pos: usize) void {
         std.debug.assert(input_lb.len >= 16);
         std.debug.assert(input_lb.len - start_pos <= 48);
         const input = input_lb[start_pos..];
@@ -168,7 +168,7 @@ pub const Wyhash = struct {
         self.b = read(8, input_lb[input_lb.len - 8 ..][0..8]);
     }
 
-    inline fn final2(self: *Wyhash) u64 {
+    fn final2(self: *Wyhash) u64 {
         self.a ^= secret[1];
         self.b ^= self.state[0];
         mum(&self.a, &self.b);
