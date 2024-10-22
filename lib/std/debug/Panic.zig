@@ -866,8 +866,8 @@ fn writeWhatOverflowed(buf: [*]u8, op_name: []const u8, type_name: []const u8) [
 }
 fn writeElementsOutOfRange(buf: [*]u8, extrema: anytype) [*]u8 {
     @setRuntimeSafety(false);
-    buf[0..26].* = "element(s) below minimum (".*;
     var ptr: [*]u8 = writeIntDec(buf + 26, extrema.min);
+    buf[0..26].* = "element(s) below minimum (".*;
     ptr[0..20].* = ") or above maximum (".*;
     ptr = writeIntDec(ptr + 20, extrema.max);
     ptr[0..2].* = "):".*;
@@ -883,27 +883,14 @@ fn cpyEquTrunc(slice: []u8, str: []const u8) [*]u8 {
         return cpyEqu(slice, str);
     }
 }
-fn formatBuf(buf: []u8, comptime fmt: []const u8, args: anytype) []u8 {
-    return std.fmt.bufPrint(buf, fmt, args) catch {
-        return writeErrorFormattingValue(buf);
-    };
-}
 fn cpyEqu(buf: []u8, str: []const u8) [*]u8 {
     for (buf[0..str.len], str) |*dest, byte| dest.* = byte;
     return buf.ptr + str.len;
 }
-fn writeErrorFormattingValue(buf: []u8) []u8 {
-    if (buf.len < 24) {
-        const short: usize = @min(buf.len, 3);
-        _ = cpyEqu(buf, "???"[0..short]);
-        return buf.ptr[0..short];
-    }
-    return cpyEqu(buf, "(error formatting value)")[0..24];
-}
 fn formatAny(buf: []u8, value: anytype) [*]u8 {
     var fbs = std.io.fixedBufferStream(buf);
-    std.fmt.format(fbs.writer(), "{any}", .{value}) catch {
-        return writeErrorFormattingValue(buf).ptr;
+    std.fmt.format(fbs.writer(), "{any}", .{value}) catch |err| {
+        return cpyEquTrunc(buf, @errorName(err));
     };
     return buf.ptr + fbs.pos;
 }
