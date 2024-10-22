@@ -32983,7 +32983,7 @@ const SliceAnalysis = struct {
     /// This type is used to track the theoretical `comptime`-ness of values.
     /// The theory is that the result of any binary operation will inherit the
     /// state of the least-known operand.
-    const State = enum(u2) { unknown = 0, variable = 1, known = 2 };
+    const State = enum(u8) { unknown = 0, variable = 1, known = 2 };
     fn worst(lhs: State, rhs: State) State {
         return @enumFromInt(@min(@intFromEnum(lhs), @intFromEnum(rhs)));
     }
@@ -33439,7 +33439,11 @@ fn analyzeSlice(
         if (sa.eq_sentinel == .variable) {
             const expected: Air.Inst.Ref = Air.internedToRef(Value.toIntern(dest_sent_val));
             const elem_ptr: Air.Inst.Ref = try block.addPtrElemPtr(dest_ptr, dest_len, elem_ptr_ty);
-            try sema.checkSentinel(block, src, elem_ty, expected, elem_ptr);
+            if (expected == .zero_u8) {
+                try sema.checkSentinelZeroByte(block, src, elem_ty, elem_ptr);
+            } else {
+                try sema.checkSentinel(block, src, elem_ty, expected, elem_ptr);
+            }
         }
     }
     // RETURN RESULT
@@ -39837,7 +39841,7 @@ fn checkSentinel(
 
 /// For any operation where the existence of a sentinel is asserted, where the
 /// sentinel value is both `u8` and equal to zero.
-fn checkNullTerminator(
+fn checkSentinelZeroByte(
     sema: *Sema,
     block: *Sema.Block,
     src: Zcu.LazySrcLoc,
