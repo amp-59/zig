@@ -8416,7 +8416,7 @@ pub const FuncGen = struct {
                     const tag: Builder.Constant = try fg.ng.object.lowerValue(tag_value.toIntern());
                     break :blk Builder.Constant.toValue(tag);
                 };
-                const cc: Builder.CallConv = toLlvmCallConv(fn_info.cc, fg.ng.object.pt.zcu.getTarget());
+                const cc: Builder.CallConv = toLlvmCallConv(fn_info.cc, fg.ng.object.pt.zcu.getTarget()).?.llvm_cc;
                 const fn_ty: Builder.Type = panic.typeOf(&fg.ng.object.builder);
                 const fn_val: Builder.Value = panic.toValue(&fg.ng.object.builder);
                 _ = try fg.wip.call(.normal, cc, .none, fn_ty, fn_val, &.{data_arg}, "");
@@ -8437,7 +8437,7 @@ pub const FuncGen = struct {
                     _ = try fg.wip.store(.normal, data_inst, ptr, alignment);
                     data_arg = ptr;
                 }
-                const cc: Builder.CallConv = toLlvmCallConv(fn_info.cc, fg.ng.object.pt.zcu.getTarget());
+                const cc: Builder.CallConv = toLlvmCallConv(fn_info.cc, fg.ng.object.pt.zcu.getTarget()).?.llvm_cc;
                 const fn_ty: Builder.Type = panic.typeOf(&fg.ng.object.builder);
                 const fn_val: Builder.Value = panic.toValue(&fg.ng.object.builder);
                 _ = try fg.wip.call(.normal, cc, .none, fn_ty, fn_val, &.{data_arg}, "");
@@ -8471,7 +8471,7 @@ pub const FuncGen = struct {
                         }
                     }
                 }
-                const cc: Builder.CallConv = toLlvmCallConv(fn_info.cc, fg.ng.object.pt.zcu.getTarget());
+                const cc: Builder.CallConv = toLlvmCallConv(fn_info.cc, fg.ng.object.pt.zcu.getTarget()).?.llvm_cc;
                 const fn_ty: Builder.Type = panic.typeOf(&fg.ng.object.builder);
                 const fn_val: Builder.Value = panic.toValue(&fg.ng.object.builder);
                 _ = try fg.wip.call(.normal, cc, .none, fn_ty, fn_val, &.{ id_arg, data_arg }, "");
